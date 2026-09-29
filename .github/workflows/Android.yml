@@ -1,0 +1,95 @@
+name: Build Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build Android APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check Android ZIP
+        run: |
+          test -f Android.zip || { echo "ERROR: Android.zip not found"; exit 1; }
+
+      - name: Extract Android project
+        run: |
+          rm -rf AndroidBuild
+          mkdir -p AndroidBuild
+          unzip -q Android.zip -d AndroidBuild
+          find AndroidBuild -maxdepth 10 -type f | sort
+
+      - name: Detect project root
+        shell: bash
+        run: |
+          PROJECT_DIR=""
+          while IFS= read -r -d '' SETTINGS_FILE; do
+            CANDIDATE_DIR="$(dirname "$SETTINGS_FILE")"
+            if [ -f "$CANDIDATE_DIR/build.gradle" ] && [ -f "$CANDIDATE_DIR/app/build.gradle" ] && [ -f "$CANDIDATE_DIR/app/src/main/AndroidManifest.xml" ]; then
+              PROJECT_DIR="$CANDIDATE_DIR"
+              break
+            fi
+          done < <(find AndroidBuild -type f -name "settings.gradle" -print0)
+
+          if [ -z "$PROJECT_DIR" ]; then
+            echo "ERROR: Valid Android project root not found inside Android.zip"
+            find AndroidBuild -maxdepth 10 -type f | sort
+            exit 1
+          fi
+
+          PROJECT_DIR="${PROJECT_DIR#./}"
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          echo "Detected Android project: $PROJECT_DIR"
+
+      - name: Verify Android project
+        run: |
+          test -f "$PROJECT_DIR/settings.gradle"
+          test -f "$PROJECT_DIR/build.gradle"
+          test -f "$PROJECT_DIR/app/build.gradle"
+          test -f "$PROJECT_DIR/app/src/main/AndroidManifest.xml"
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Generate Gradle Wrapper
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: gradle wrapper --gradle-version 8.9
+
+      - name: Build Debug APK
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: ./gradlew clean assembleDebug --no-daemon --stacktrace
+
+      - name: Verify APK
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          test -f app/build/outputs/apk/debug/app-debug.apk
+          ls -lh app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Prepare APK
+        run: |
+          mkdir -p output
+          cp "$PROJECT_DIR/app/build/outputs/apk/debug/app-debug.apk" output/App-debug.apk
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: App-APK
+          path: output/App-debug.apk
+          if-no-files-found: error
